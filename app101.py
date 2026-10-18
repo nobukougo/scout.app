@@ -1,28 +1,11 @@
-import gspread
-from google.oauth2.service_account import Credentials
-
-@st.cache_resource
-def init_connection():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scopes
-    )
-    client = gspread.authorize(creds)
-    # スプレッドシートURLの /d/ から /edit の間にある文字列を指定
-    return client.open_by_key("あなたのスプレッドシートのID").sheet1
-
-worksheet = init_connection()
-
 import io
 from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ==========================================
 # 1. アプリの基本設定
@@ -43,6 +26,28 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ==========================================
+# GCP スプレッドシート接続設定
+# ==========================================
+@st.cache_resource
+def init_connection():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    # ↓必ずあなたのスプレッドシートのIDに書き換えてください
+    return client.open_by_key("あなたのスプレッドシートのID").sheet1
+
+worksheet = init_connection()
+
+# ==========================================
+# 定数・初期設定
+# ==========================================
 LEADERS = ["隊長", "副長", "副長補", "インストラクター"]
 SCOUTS_PATROL_1 = [
     "スカウトA (シロクマ班)",
@@ -90,7 +95,6 @@ st.markdown(
 
 # ==========================================
 # 2. 計画情報の状態管理
-# ウィジェットを作る前に session_state を更新することが重要
 # ==========================================
 def default_plan_values():
     return {
@@ -136,7 +140,6 @@ def initialize_plan_widgets(eval_type):
 
 
 def set_plan_widgets(eval_type, data):
-    """対応するウィジェットが生成される前に呼び出す。"""
     for field, key in widget_key_map(eval_type).items():
         if field in data:
             value = data[field]
@@ -158,11 +161,9 @@ def parse_plan_excel(file_bytes):
         wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
         ws = wb.active
 
-        # read_only ワークシートでのセル再アクセスを避け、必要範囲を一度に読む
         rows = list(ws.iter_rows(min_row=1, max_row=50, max_col=10, values_only=True))
 
         def get_val(r, c):
-            """元コードと同じ0始まりの行・列番号で値を取得する。"""
             if r >= len(rows) or c >= len(rows[r]):
                 return ""
             value = rows[r][c]
@@ -178,13 +179,11 @@ def parse_plan_excel(file_bytes):
             if isinstance(value, date):
                 return value
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                # Excelの日付シリアル値
                 return pd.to_datetime(
                     value, unit="D", origin="1899-12-30", errors="raise"
                 ).date()
             if isinstance(value, str) and value.strip():
                 return pd.to_datetime(value.strip(), errors="raise").date()
-            # 日付が空欄の場合のみ今日を初期値として使用
             return date.today()
 
         def as_text(value):
@@ -205,7 +204,6 @@ def parse_plan_excel(file_bytes):
         try:
             parsed_date = to_date(date_raw)
         except (ValueError, TypeError, OverflowError):
-            # 不正な日付を黙って今日に置き換えず、原因がわかるようにする
             raise ValueError(f"活動日のセルを日付として読み取れません: {date_raw!r}")
 
         timetable_lines = []
@@ -250,7 +248,6 @@ def parse_plan_excel(file_bytes):
 def render_evaluation_form(eval_type):
     initialize_plan_widgets(eval_type)
 
-    # クリア・Excel反映は入力ウィジェットの生成前に処理する
     col_spacer, col_clear = st.columns([4, 1])
     with col_clear:
         clear_clicked = st.button("🗑️ 入力値をクリア", key=f"clear_{eval_type}")
@@ -336,121 +333,4 @@ def render_evaluation_form(eval_type):
         with col_p1:
             e_scout = st.selectbox("対象スカウト", current_scouts)
         with col_p2:
-            e_leader1 = st.selectbox("指導者1", LEADERS)
-        with col_p3:
-            e_leader2 = st.selectbox("指導者2", ["(なし)"] + LEADERS)
-
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            e_skill = st.slider("技能（技術の習得度など）", 1, 5, 3)
-        with col_s2:
-            e_interest = st.slider("関心（積極性・態度など）", 1, 5, 3)
-
-        col_c1, col_c2, col_c3 = st.columns(3)
-        with col_c1:
-            e_rank = st.selectbox("進級目標", BS_RANKS)
-        with col_c2:
-            e_cat = st.selectbox("評価カテゴリ", SKILL_CATEGORIES)
-        with col_c3:
-            e_badge = st.selectbox("技能章", MERIT_BADGES)
-
-        e_task = st.text_input("具体的な取り組み・細目")
-        e_com1 = st.text_area("指導者1からのコメント", height=120)
-        e_com2 = st.text_area("指導者2からのコメント（任意）", height=120)
-
-        submitted = st.form_submit_button(
-            "＋ このスカウトの評価を記録する",
-            type="primary",
-            use_container_width=True,
-        )
-
-   if submitted:
-            new_row = [
-                eval_type, str(date_val), activity_type_eval, location, duty_patrol, theme,
-                b_agenda1, b_agenda2, b_agenda3, b_agenda4, b_agenda5,
-                g_agenda1, g_agenda2, g_agenda3, timetable,
-                e_leader1, "" if e_leader2 == "(なし)" else e_leader2, e_scout,
-                e_skill, e_interest, e_rank, e_cat, e_task, e_badge, e_com1, e_com2
-            ]
-            worksheet.append_row(new_row)
-            st.success(f"✅ {e_scout} の評価をスプレッドシートに記録しました。")
-# ==========================================
-# 5. 画面
-# ==========================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📝 各集会評価",
-    "🏕️ GB集会・訓練評価",
-    "📈 進歩・進級記録",
-    "📊 データ出力",
-    "📶 圏外同期",
-])
-
-with tab1:
-    render_evaluation_form("各集会評価")
-with tab2:
-    render_evaluation_form("GB集会・訓練評価")
-with tab3:
-    render_evaluation_form("進歩・進級記録")
-
-with tab4:
-    st.subheader("蓄積データの一覧")
-    st.dataframe(st.session_state.eval_data, use_container_width=True)
-
-    if not st.session_state.eval_data.empty:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter", date_format="yyyy-mm-dd") as writer:
-            st.session_state.eval_data.to_excel(writer, sheet_name="統合記録", index=False)
-        st.download_button(
-            "📥 全データをExcelで一括ダウンロード",
-            data=buffer.getvalue(),
-            file_name=f"BS_Scout_Data_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-        )
-
-with tab5:
-    st.subheader("圏外での入力用テンプレートとデータ同期")
-    template_df = pd.DataFrame(columns=DATA_COLUMNS)
-    template_buffer = io.BytesIO()
-    with pd.ExcelWriter(template_buffer, engine="xlsxwriter") as writer:
-        template_df.to_excel(writer, sheet_name="入力用", index=False)
-    st.download_button(
-        "📄 オフライン入力用テンプレートをダウンロード",
-        data=template_buffer.getvalue(),
-        file_name="Offline_Template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-    uploaded_file = st.file_uploader(
-        "オフラインで入力したExcelファイルをアップロード",
-        type=["xlsx"],
-        key="offline_sync",
-    )
-    if uploaded_file is not None and st.button("同期（データを追加）する", key="btn_offline_sync"):
-        try:
-            offline_data = pd.read_excel(
-                io.BytesIO(uploaded_file.getvalue()),
-                engine="openpyxl",
-            )
-            if list(offline_data.columns) != DATA_COLUMNS:
-                st.error(
-                    "Excelの列構成がテンプレートと異なります。"
-                    "このアプリからダウンロードしたテンプレートを使用してください。"
-                )
-            elif offline_data.empty:
-                st.warning("追加できるデータがありません。")
-            else:
-                # 列順を明示してから追加する
-                offline_data = offline_data[DATA_COLUMNS]
-                st.session_state.eval_data = pd.concat(
-                    [st.session_state.eval_data, offline_data],
-                    ignore_index=True,
-                )
-                st.success(f"✅ {len(offline_data)}件のデータを追加しました。")
-        except Exception as exc:
-            st.error(f"同期に失敗しました: {exc}")
-
-st.caption(
-    "注意：この版の記録データはStreamlitのセッション内に保存されます。 "
-    "アプリ再起動やセッション切断後も確実に保持するには、外部ファイルやデータベースへの保存機能が必要です。"
-)
+            e_leader1 = st.selectbox
