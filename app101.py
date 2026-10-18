@@ -8,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ==========================================
-# 1. アプリの基本設定
+# 1. アプリの基本設定 (※stの呼び出しで必ず一番最初！)
 # ==========================================
 st.set_page_config(
     page_title="BS活動評価システム app8",
@@ -113,7 +113,6 @@ def default_plan_values():
         "タイムテーブル": "09:00 集合・点検\n12:00 昼食",
     }
 
-
 def widget_key_map(eval_type):
     return {
         "日時": f"date_{eval_type}",
@@ -131,13 +130,11 @@ def widget_key_map(eval_type):
         "タイムテーブル": f"time_{eval_type}",
     }
 
-
 def initialize_plan_widgets(eval_type):
     defaults = default_plan_values()
     for field, key in widget_key_map(eval_type).items():
         if key not in st.session_state:
             st.session_state[key] = defaults[field]
-
 
 def set_plan_widgets(eval_type, data):
     for field, key in widget_key_map(eval_type).items():
@@ -160,7 +157,6 @@ def parse_plan_excel(file_bytes):
     try:
         wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
         ws = wb.active
-
         rows = list(ws.iter_rows(min_row=1, max_row=50, max_col=10, values_only=True))
 
         def get_val(r, c):
@@ -328,9 +324,131 @@ def render_evaluation_form(eval_type):
     st.markdown("<hr>", unsafe_allow_html=True)
     st.subheader("👤 2. スカウト個別評価（1人ずつ連続入力）")
 
+    # フォームの開始
     with st.form(f"form_{eval_type}", clear_on_submit=True):
         col_p1, col_p2, col_p3 = st.columns(3)
         with col_p1:
             e_scout = st.selectbox("対象スカウト", current_scouts)
         with col_p2:
-            e_leader1 = st.selectbox
+            e_leader1 = st.selectbox("指導者1", LEADERS)
+        with col_p3:
+            e_leader2 = st.selectbox("指導者2", ["(なし)"] + LEADERS)
+
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            e_skill = st.slider("技能（技術の習得度など）", 1, 5, 3)
+        with col_s2:
+            e_interest = st.slider("関心（積極性・態度など）", 1, 5, 3)
+
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            e_rank = st.selectbox("進級目標", BS_RANKS)
+        with col_c2:
+            e_cat = st.selectbox("評価カテゴリ", SKILL_CATEGORIES)
+        with col_c3:
+            e_badge = st.selectbox("技能章", MERIT_BADGES)
+
+        e_task = st.text_input("具体的な取り組み・細目")
+        e_com1 = st.text_area("指導者1からのコメント", height=120)
+        e_com2 = st.text_area("指導者2からのコメント（任意）", height=120)
+
+        submitted = st.form_submit_button(
+            "＋ このスカウトの評価を記録する",
+            type="primary",
+            use_container_width=True,
+        )
+
+    # フォーム終了後に if 文を配置（インデント揃え済み）
+    if submitted:
+        new_row = [
+            eval_type, str(date_val), activity_type_eval, location, duty_patrol, theme,
+            b_agenda1, b_agenda2, b_agenda3, b_agenda4, b_agenda5,
+            g_agenda1, g_agenda2, g_agenda3, timetable,
+            e_leader1, "" if e_leader2 == "(なし)" else e_leader2, e_scout,
+            e_skill, e_interest, e_rank, e_cat, e_task, e_badge, e_com1, e_com2
+        ]
+        worksheet.append_row(new_row)
+        st.success(f"✅ {e_scout} の評価をスプレッドシートに記録しました。")
+
+# ==========================================
+# 5. 画面 (Tabs)
+# ==========================================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📝 各集会評価",
+    "🏕️ GB集会・訓練評価",
+    "📈 進歩・進級記録",
+    "📊 データ出力",
+    "📶 圏外同期",
+])
+
+with tab1:
+    render_evaluation_form("各集会評価")
+with tab2:
+    render_evaluation_form("GB集会・訓練評価")
+with tab3:
+    render_evaluation_form("進歩・進級記録")
+
+with tab4:
+    st.subheader("蓄積データの一覧")
+    try:
+        # スプレッドシートから全データを取得して表示
+        records = worksheet.get_all_records()
+        df_eval = pd.DataFrame(records)
+        st.dataframe(df_eval, use_container_width=True)
+
+        if not df_eval.empty:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="xlsxwriter", date_format="yyyy-mm-dd") as writer:
+                df_eval.to_excel(writer, sheet_name="統合記録", index=False)
+            st.download_button(
+                "📥 全データをExcelで一括ダウンロード",
+                data=buffer.getvalue(),
+                file_name=f"BS_Scout_Data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+            )
+    except Exception as e:
+        st.error("スプレッドシートの読み込みに失敗しました。1行目にヘッダー（列名）が入力されているか確認してください。")
+
+with tab5:
+    st.subheader("圏外での入力用テンプレートとデータ同期")
+    template_df = pd.DataFrame(columns=DATA_COLUMNS)
+    template_buffer = io.BytesIO()
+    with pd.ExcelWriter(template_buffer, engine="xlsxwriter") as writer:
+        template_df.to_excel(writer, sheet_name="入力用", index=False)
+    st.download_button(
+        "📄 オフライン入力用テンプレートをダウンロード",
+        data=template_buffer.getvalue(),
+        file_name="Offline_Template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    uploaded_file = st.file_uploader(
+        "オフラインで入力したExcelファイルをアップロード",
+        type=["xlsx"],
+        key="offline_sync",
+    )
+    if uploaded_file is not None and st.button("同期（データを追加）する", key="btn_offline_sync"):
+        try:
+            offline_data = pd.read_excel(
+                io.BytesIO(uploaded_file.getvalue()),
+                engine="openpyxl",
+            )
+            if list(offline_data.columns) != DATA_COLUMNS:
+                st.error(
+                    "Excelの列構成がテンプレートと異なります。"
+                    "このアプリからダウンロードしたテンプレートを使用してください。"
+                )
+            elif offline_data.empty:
+                st.warning("追加できるデータがありません。")
+            else:
+                offline_data = offline_data[DATA_COLUMNS]
+                for index, row in offline_data.iterrows():
+                    worksheet.append_row(row.tolist())
+                st.success(f"✅ {len(offline_data)}件のデータをスプレッドシートに追加しました。")
+        except Exception as exc:
+            st.error(f"同期に失敗しました: {exc}")
+
+st.caption(
+    "記録データはGCPを通じてGoogleスプレッドシートに保存されています。"
+)
